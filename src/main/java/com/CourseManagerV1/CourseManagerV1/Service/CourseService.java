@@ -2,7 +2,9 @@ package com.CourseManagerV1.CourseManagerV1.Service;
 
 import com.CourseManagerV1.CourseManagerV1.Model.Enrollment;
 import com.CourseManagerV1.CourseManagerV1.Model.Student;
+import com.CourseManagerV1.CourseManagerV1.Model.UnenrollmentRequest;
 import com.CourseManagerV1.CourseManagerV1.Repository.StudentRepository;
+import com.CourseManagerV1.CourseManagerV1.Repository.UnenrollmentRequestRepository;
 import com.CourseManagerV1.CourseManagerV1.dto.CourseDTO;
 import com.CourseManagerV1.CourseManagerV1.Model.Course;
 import com.CourseManagerV1.CourseManagerV1.Repository.CourseRepository;
@@ -13,6 +15,7 @@ import jakarta.transaction.Transactional;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 import java.util.stream.Collectors;
@@ -21,7 +24,11 @@ import java.util.stream.Collectors;
 public class CourseService {
 
     @Autowired
+    private UnenrollmentRequestRepository unenrollmentRequestRepository;
+
+    @Autowired
     private CourseRepository courseRepository;
+
 
     @Autowired
     private EnrollmentRepository enrollmentRepository;
@@ -83,33 +90,59 @@ public class CourseService {
 
     // unenroll course by email and course id
     @Transactional
-    public boolean unenrollCourse(String studentEmail, Long courseId) {
-
-        System.out.println("Attempting to unenroll. Email: " + studentEmail + ", Course ID: " + courseId);
-
+    // Student requests to unenroll
+    public String requestUnenrollment(String studentEmail, Long courseId) {
         Optional<Course> courseOpt = courseRepository.findById(courseId);
-        if (courseOpt.isPresent()) {
-            Course course = courseOpt.get();
+        if (courseOpt.isEmpty()) {
+            return "Course not found.";
+        }
+
+        boolean alreadyRequested = unenrollmentRequestRepository
+                .findAll()
+                .stream()
+                .anyMatch(req -> req.getStudentEmail().equals(studentEmail)
+                        && req.getCourse().getId().equals(courseId)
+                        && req.getStatus().equals("PENDING"));
+
+        if (alreadyRequested) return "Unenrollment request already submitted.";
+
+        UnenrollmentRequest request = new UnenrollmentRequest();
+        request.setStudentEmail(studentEmail);
+        request.setCourse(courseOpt.get());
+        request.setStatus("PENDING");
+        request.setRequestedAt(LocalDateTime.now());
+
+        unenrollmentRequestRepository.save(request);
+        return "Unenrollment request submitted.";
+    }
 
 
-            System.out.println("Found course: " + course.getName());
+    @Transactional
+    public String processUnenrollmentRequest(Long requestId, boolean approve) {
+        Optional<UnenrollmentRequest> reqOpt = unenrollmentRequestRepository.findById(requestId);
+        if (reqOpt.isEmpty()) return "Request not found.";
 
-            boolean exists = enrollmentRepository.existsByStudentEmailAndCourse_Id(studentEmail, courseId);
-            System.out.println("Enrollment exists: " + exists);
+        UnenrollmentRequest req = reqOpt.get();
 
-            if (!exists) {
-                return false;
-            }
-            enrollmentRepository.deleteByStudentEmailAndCourse_Id(studentEmail, courseId);
+        if (!req.getStatus().equals("PENDING")) return "Request already processed.";
+
+        if (approve) {
+            // Remove student from course
+            enrollmentRepository.deleteByStudentEmailAndCourse_Id(req.getStudentEmail(), req.getCourse().getId());
+
+            Course course = req.getCourse();
             course.setFilledSlots(course.getFilledSlots() - 1);
             courseRepository.save(course);
 
-            return true;
+            req.setStatus("APPROVED");
         } else {
-            System.out.println("Course not found for ID: " + courseId);
-            return false;
+            req.setStatus("REJECTED");
         }
+
+        unenrollmentRequestRepository.save(req);
+        return "Request " + (approve ? "approved and student unenrolled." : "rejected.");
     }
+
 
     // Add new course from Admin Side access only
     public CourseDTO addCourse(CourseDTO courseDTO) {
@@ -146,16 +179,26 @@ public class CourseService {
 
 
     // Admin only access, remove the course list from the course DB itself
+
     @Transactional
     public boolean deleteCourseById(Long courseId) {
         Optional<Course> courseOpt = courseRepository.findById(courseId);
         if (courseOpt.isPresent()) {
-            enrollmentRepository.deleteByCourse_Id(courseId);
+            Course course = courseOpt.get();
+
+            // Check if any students are enrolled
+            boolean hasEnrollments = enrollmentRepository.existsByCourse_Id(courseId);
+
+            if (hasEnrollments) {
+                return false; // Don't delete if students are enrolled
+            }
+
             courseRepository.deleteById(courseId);
             return true;
         }
         return false;
     }
+
 
 
 
@@ -173,5 +216,27 @@ public class CourseService {
         return true;
     }
 
+    @Transactional
+    public String updateCourse(Long courseId, CourseDTO updatedCourseDTO) {
+        Optional<Course> courseOpt = courseRepository.findById(courseId);
+        if (courseOpt.isEmpty()) {
+            return "Course not found.";
+        }
+
+        Course course = courseOpt.get();
+
+        // Update fields
+        course.setName(updatedCourseDTO.getName());
+        course.setDuration(updatedCourseDTO.getDuration());
+        course.setSession(updatedCourseDTO.getSession());
+        course.setTotalSlots(updatedCourseDTO.getTotalSlots());
+
+        // Ensure filledSlots doesn't exceed totalSlots
+        int newFilledSlots = Math.min(updatedCourseDTO.getFilledSlots(), updatedCourseDTO.getTotalSlots());
+        course.setFilledSlots(newFilledSlots);
+
+        courseRepository.save(course);
+        return "Course updated successfully.";
+    }
 
 }

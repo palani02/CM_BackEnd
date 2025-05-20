@@ -65,4 +65,6 @@ public class Course {
     public void setFilledSlots(int filledSlots) {
         this.filledSlots = filledSlots;
     }
+
+
 }
